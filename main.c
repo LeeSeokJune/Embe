@@ -8,13 +8,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
-#include <unistd.h>
 #include <fcntl.h>
 #include <dirent.h>
 #include <errno.h>
 #include <time.h>
 #include <signal.h>
 #include <string.h>
+#include <math.h>
+#include "fpga_dot_font.h"
+
 
 #define BUFF_SIZE 64
 #define FPGA_BASE_ADDRESS 0x08000000 //fpga_base address
@@ -35,7 +37,15 @@
 #define DRAWBOARD_MODE 5
 
 
+unsigned char dot_mode[3][10] = {	// for text editor mode
+	{0x1c,0x36,0x63,0x63,0x63,0x7f,0x7f,0x63,0x63,0x63},	// A
+	{0x0c,0x1c,0x1c,0x0c,0x0c,0x0c,0x0c,0x0c,0x0c,0x1e},	// 1
+	{0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00}
+};
 
+unsigned char txt_list[9][3] = {	// for text editor mode
+	".QZ","ABC","DEF","GHI","JKL","MNO","PRS","TUV","WXY"
+};
 
 int mode_num;
 key_t mode_key, input_key, output_key;
@@ -81,9 +91,10 @@ int init_memory() {
 	for (i = 0; i < 9; i++) {
 		input_memory[i] = 0;
 	}
-	for (i = 0; i < 5; i++) {
+	for (i = 0; i < 20; i++) {
 		output_memory[i] = 0;
 	}
+
 	if (*mode_memory == CLOCK_MODE) {
 		ctime = localtime(&clock);
 		output_memory[0] = ctime->tm_hour / 10;
@@ -94,12 +105,14 @@ int init_memory() {
 		output_memory[5] = 0;
 	}
 	if (*mode_memory == COUNTER_MODE) {
-		output_memory[0] = 0;
-		output_memory[1] = 0;
-		output_memory[2] = 0;
-		output_memory[3] = 0;
+
 		output_memory[4] = 10; // 10Áø¹ý
 		output_memory[5] = 64; // 2¹øÂ° led
+	}
+	if (*mode_memory == TEXTEDITOR_MODE) {
+		for (i = 0; i < 9; i++) {
+			output_memory[i + 4] = ' ';
+		}
 	}
 
 	printf("init_memory\n");
@@ -215,6 +228,11 @@ int input_process() {
 			//printf("\n");
 			//flag = 0;
 		}
+		if (*mode_memory == TEXTEDITOR_MODE) { // for double touch
+			input_memory[9] = input_memory[1] * input_memory[2];
+			input_memory[10] = input_memory[4] * input_memory[5];
+			input_memory[11] = input_memory[7] * input_memory[8];
+		}
 		
 		
 	}
@@ -227,6 +245,9 @@ int output_process() {
 		switch (*mode_memory) {
 			case QUIT:
 				return;
+			case DEFAULT_MODE:
+				Default_mode_output();
+				break;
 			case CLOCK_MODE:
 				Clock_mode_output();
 				break;
@@ -234,15 +255,55 @@ int output_process() {
 				Counter_mode_output();
 				break;
 			case TEXTEDITOR_MODE:
+				Text_editor_mode_output();
 				break;
 			case DRAWBOARD_MODE:
+				Draw_board_mode_output();
 				break;
 			
 
 		}
 	}
 }
+int Default_mode_output() {
+	
+	int i;
+	unsigned char retval;
+	unsigned long *fpga_addr = 0;
+	unsigned char *led_addr = 0;
+	int led, fnd,lcd,dot;
+	int dot_size;
+	char str[32];
+	led = open("/dev/mem", O_RDWR | O_SYNC);
+	fpga_addr = (unsigned long *)mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, led, FPGA_BASE_ADDRESS);
+	led_addr = (unsigned char*)((void*)fpga_addr + LED_ADDR);
+	printf("default output\n");
 
+	fnd = open("/dev/fpga_fnd", O_RDWR);
+
+	lcd = open("/dev/fpga_text_lcd", O_WRONLY);
+
+	dot = open("/dev/fpga_dot", O_WRONLY);
+	dot_size = sizeof(fpga_number[18]);
+	for (i = 0; i < 32; i++)
+		str[i] = ' ';
+	while (*mode_memory == DEFAULT_MODE) {
+		usleep(40000);
+		retval = write(fnd, output_memory, 4);       //fnd µ¤¾î¾²±â
+
+		*led_addr = 0; // led ºÒÅ°´ÂºÎºÐ 1~255
+		usleep(40000);
+		write(dot, dot_mode[2], dot_size);
+		usleep(40000);
+		write(lcd,str , 32);
+
+	}
+	close(lcd);
+	close(led);
+	close(dot);
+	close(fnd);
+	return 0;
+}
 int Clock_mode() {
 	int tmp = 0, tmp2, i;
 	int ex_buffer[4];
@@ -332,6 +393,7 @@ int Clock_mode_output() {
 	unsigned char retval;
 	unsigned long *fpga_addr = 0;
 	unsigned char *led_addr = 0;
+	char str[4] = { '0','0','0','0' };
 	int led, fnd;
 	printf("clock output\n");
 	led = open("/dev/mem", O_RDWR | O_SYNC);
@@ -354,6 +416,8 @@ int Clock_mode_output() {
 		}
 
 	}
+	*led_addr = 0;
+	write(fnd, str, 4);
 	close(led);
 	close(fnd);
 	return 0;
@@ -455,6 +519,7 @@ int Counter_mode_output() {
 	unsigned long *fpga_addr = 0;
 	unsigned char *led_addr = 0;
 	int led, fnd;
+	char str[4] = { '0','0','0','0' };
 
 	led = open("/dev/mem", O_RDWR | O_SYNC);
 	fpga_addr = (unsigned long *)mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, led, FPGA_BASE_ADDRESS);
@@ -470,23 +535,573 @@ int Counter_mode_output() {
 
 		
 	}
+	*led_addr = 0;
+	write(fnd, str, 4);
 	close(led);
 	close(fnd);
 	return 0 ;
 	
 }
 
-
 int Text_editor_mode() {
+	int tmp = 0, tmp2, i;
+	int cnt = 0, s_cnt = 0;
+	int ex_buffer[12];
+	int flag = 0;
+	char str[9];
+
+	printf("text_editor mode\n");
 	while (*mode_memory == TEXTEDITOR_MODE) {
-		printf("text_editor mode\n");
+
+		if (ex_buffer[9] == 1 && input_memory[9] == 1) { // press check
+			flag = 1;
+		}
+
+		else 	if (ex_buffer[10] == 1 && input_memory[10] == 1) { // press check		
+			flag = 1;
+		}
+
+		else if (ex_buffer[11] == 1 && input_memory[11] == 1) { // press check
+			flag = 1;
+		}
+		else if (ex_buffer[9] == 1 && input_memory[9] == 0) { // clear
+			cnt++;
+			s_cnt = 0;
+			for (i = 0; i < 9; i++) {
+				str[i] = ' ';
+				output_memory[i + 4] = ' ';
+			}
+		}
+		else if (ex_buffer[10] == 1 && input_memory[10] == 0) { // chage type
+			cnt++;
+			if (output_memory[15] == 0)
+				output_memory[15] = 1;
+			else if (output_memory[15] == 1)
+				output_memory[15] = 0;
+		}
+		else if (ex_buffer[11] == 1 && input_memory[11] == 0) { // space
+			cnt++;
+			output_memory[s_cnt] = ' ';
+			s_cnt++;
+		}
+		else if (ex_buffer[0] == 1 && input_memory[0] == 0 && flag == 0) { // .QZ 1
+			cnt++;
+			if (output_memory[15] == 0) { // eng
+				if (s_cnt > 0) {
+					if (str[s_cnt - 1] == txt_list[0][0])
+						str[s_cnt - 1] = txt_list[0][1];
+					else if (str[s_cnt - 1] == txt_list[0][1])
+						str[s_cnt - 1] = txt_list[0][2];
+					else if (str[s_cnt - 1] == txt_list[0][2])
+						str[s_cnt - 1] = txt_list[0][0];
+					else {
+						str[s_cnt] = txt_list[0][0];
+						s_cnt++;
+					}
+
+				}
+				else {
+					str[s_cnt] = txt_list[0][0];
+					s_cnt++;
+				}
+			}
+			else { //num
+				str[s_cnt] = '1';
+				s_cnt++;
+			}
+			
+		}
+
+		else if (ex_buffer[1] == 1 && input_memory[1] == 0 && flag == 0) { // ABC 2
+			cnt++;
+
+			if (output_memory[15] == 0) { // eng
+				if (s_cnt > 0) {
+					if (str[s_cnt - 1] == txt_list[1][0])
+						str[s_cnt - 1] = txt_list[1][1];
+					else if (str[s_cnt - 1] == txt_list[1][1])
+						str[s_cnt - 1] = txt_list[1][2];
+					else if (str[s_cnt - 1] == txt_list[1][2])
+						str[s_cnt - 1] = txt_list[1][0];
+					else {
+						str[s_cnt] = txt_list[1][0];
+						s_cnt++;
+					}
+				}
+				else {
+					str[s_cnt] = txt_list[1][0];
+					s_cnt++;
+				}
+			}
+			else { //num
+				str[s_cnt] = '2';
+				s_cnt++;
+			}
+			
+
+		}
+		else if (ex_buffer[2] == 1 && input_memory[2] == 0 && flag == 0) { // DEF 3
+			cnt++;
+			if (output_memory[15] == 0) { // eng
+				if (s_cnt > 0) {
+					if (str[s_cnt - 1] == txt_list[2][0])
+						str[s_cnt - 1] = txt_list[2][1];
+					else if (str[s_cnt - 1] == txt_list[2][1])
+						str[s_cnt - 1] = txt_list[2][2];
+					else if (str[s_cnt - 1] == txt_list[2][2])
+						str[s_cnt - 1] = txt_list[2][0];
+					else {
+						str[s_cnt] = txt_list[2][0];
+						s_cnt++;
+					}
+				}
+				else {
+					str[s_cnt] = txt_list[2][0];
+					s_cnt++;
+				}
+			}
+			else { //num
+				str[s_cnt] = '3';
+				s_cnt++;
+			}
+			
+
+		}
+
+		else if (ex_buffer[3] == 1 && input_memory[3] == 0 && flag == 0) {// GHI 4
+			cnt++;
+			if (output_memory[15] == 0) { // eng
+				if (s_cnt > 0) {
+					if (str[s_cnt - 1] == txt_list[3][0])
+						str[s_cnt - 1] = txt_list[3][1];
+					else if (str[s_cnt - 1] == txt_list[3][1])
+						str[s_cnt - 1] = txt_list[3][2];
+					else if (str[s_cnt - 1] == txt_list[3][2])
+						str[s_cnt - 1] = txt_list[3][0];
+					else {
+						str[s_cnt] = txt_list[3][0];
+						s_cnt++;
+					}
+				}
+				else {
+					str[s_cnt] = txt_list[3][0];
+					s_cnt++;
+				}
+			}
+			else { //num
+				str[s_cnt] = '4';
+				s_cnt++;
+			}
+			
+		}
+
+		else if (ex_buffer[4] == 1 && input_memory[4] == 0 && flag == 0) {// JKL 5
+			cnt++;
+			if (output_memory[15] == 0) { // eng
+				if (s_cnt > 0) {
+					if (str[s_cnt - 1] == txt_list[4][0])
+						str[s_cnt - 1] = txt_list[4][1];
+					else if (str[s_cnt - 1] == txt_list[4][1])
+						str[s_cnt] = txt_list[4][2];
+					else if (str[s_cnt - 1] == txt_list[4][2])
+						str[s_cnt - 1] = txt_list[4][0];
+					else {
+						str[s_cnt] = txt_list[4][0];
+						s_cnt++;
+					}
+				}
+				else {
+					str[s_cnt] = txt_list[4][0];
+					s_cnt++;
+				}
+			}
+			else { //num
+				str[s_cnt] = '5';
+				s_cnt++;
+			}
+			
+		}
+
+		else if (ex_buffer[5] == 1 && input_memory[5] == 0 && flag == 0) {// MNO 6
+			cnt++;
+			if (output_memory[15] == 0) { // eng
+				if (s_cnt > 0) {
+					if (str[s_cnt - 1] == txt_list[5][0])
+						str[s_cnt - 1] = txt_list[5][1];
+					else if (str[s_cnt - 1] == txt_list[5][1])
+						str[s_cnt - 1] = txt_list[5][2];
+					else if (str[s_cnt - 1] == txt_list[5][2])
+						str[s_cnt - 1] = txt_list[5][0];
+					else {
+						str[s_cnt] = txt_list[5][0];
+						s_cnt++;
+					}
+				}
+				else {
+					str[s_cnt] = txt_list[5][0];
+					s_cnt++;
+				}
+			}
+			else { //num
+				str[s_cnt] = '6';
+				s_cnt++;
+			}
+			
+		}
+
+		else if (ex_buffer[6] == 1 && input_memory[6] == 0 && flag == 0) {// PRS 7
+			cnt++;
+			if (output_memory[15] == 0) { // eng
+				if (s_cnt > 0) {
+					if (str[s_cnt - 1] == txt_list[6][0])
+						str[s_cnt - 1] = txt_list[6][1];
+					else if (str[s_cnt - 1] == txt_list[6][1])
+						str[s_cnt - 1] = txt_list[6][2];
+					else if (str[s_cnt - 1] == txt_list[6][2])
+						str[s_cnt - 1] = txt_list[6][0];
+					else {
+						str[s_cnt] = txt_list[6][0];
+						s_cnt++;
+					}
+				}
+				else {
+					str[s_cnt] = txt_list[6][0];
+					s_cnt++;
+				}
+			}
+			else { //num
+				str[s_cnt] = '7';
+				s_cnt++;
+			}
+			
+		}
+
+		else if (ex_buffer[7] == 1 && input_memory[7] == 0 && flag == 0) {// TUV 8
+			cnt++;
+			if (output_memory[15] == 0) { // eng
+				if (s_cnt > 0) {
+					if (str[s_cnt - 1] == txt_list[7][0])
+						str[s_cnt - 1] = txt_list[7][1];
+					else if (str[s_cnt - 1] == txt_list[7][1])
+						str[s_cnt - 1] = txt_list[7][2];
+					else if (str[s_cnt - 1] == txt_list[7][2])
+						str[s_cnt - 1] = txt_list[7][0];
+					else {
+						str[s_cnt] = txt_list[7][0];
+						s_cnt++;
+					}
+				}
+				else {
+					str[s_cnt] = txt_list[7][0];
+					s_cnt++;
+				}
+			}
+			else { //num
+				str[s_cnt] = '8';
+				s_cnt++;
+			}
+			
+		}
+
+		else if (ex_buffer[8] == 1 && input_memory[8] == 0 && flag == 0) {// WXY 9
+			cnt++;
+			if (output_memory[15] == 0) { // eng
+				if (s_cnt > 0) {
+					if (str[s_cnt - 1] == txt_list[8][0])
+						str[s_cnt - 1] = txt_list[8][1];
+					else if (str[s_cnt - 1] == txt_list[8][1])
+						str[s_cnt - 1] = txt_list[8][2];
+					else if (str[s_cnt - 1] == txt_list[8][2])
+						str[s_cnt - 1] = txt_list[8][0];
+					else {
+						str[s_cnt] = txt_list[8][0];
+						s_cnt++;
+					}
+				}
+				else {
+					str[s_cnt] = txt_list[8][0];
+					s_cnt++;
+				}
+			}
+			else { //num
+				str[s_cnt] = '9';
+				s_cnt++;
+			}
+			
+		}
+
+		//lcd
+
+		if (s_cnt == 9) {
+			for (i = 1; i < 9; i++) {
+				str[i - 1] = str[i];
+			}
+			
+			s_cnt--;
+		}
+		for (i = 0; i < s_cnt; i++) {
+			output_memory[i + 4] = str[i];
+		}
+		output_memory[16] = s_cnt;
+		//fnd 
+		tmp = cnt % 10000;
+		output_memory[0] = tmp / 1000;
+		tmp %= 1000;
+		output_memory[1] = tmp / 100;
+		tmp %= 100;
+		output_memory[2] = tmp / 10;
+		tmp %= 10;
+		output_memory[3] = tmp;
+		
+		for (i = 0; i < 12; i++) {
+			ex_buffer[i] = input_memory[i];
+		}
+		for (i = 0; i < 9; i++) {
+			if (input_memory[i] == 1) break;
+			else if (i == 8 && input_memory[i] == 0)
+				flag = 0;
+		}
+		/*
+		for (i = 0; i < 8; i++) {
+			printf("%c      ",output_memory[i+4]);
+		}
+		printf("%d    %d \n",s_cnt,flag);
+		*/
+		usleep(50000);
+
 	}
+	return 0;
+}
+
+int Text_editor_mode_output() {
+	int i;
+	unsigned char retval;
+	unsigned long *fpga_addr = 0;
+	unsigned char *led_addr = 0;
+	int led, fnd,dot,lcd;
+	int dot_size;
+	char str_fnd[4] = { '0','0','0','0' };
+	char str_lcd[32];
+	for (i = 0; i < 32; i++)
+		str_lcd[i] = ' ';
+	led = open("/dev/mem", O_RDWR | O_SYNC);
+	fpga_addr = (unsigned long *)mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, led, FPGA_BASE_ADDRESS);
+	led_addr = (unsigned char*)((void*)fpga_addr + LED_ADDR);
+
+	dot = open("/dev/fpga_dot", O_WRONLY);
+	dot_size = sizeof(fpga_number[18]);
+
+	lcd = open("/dev/fpga_text_lcd", O_WRONLY);
+	fnd = open("/dev/fpga_fnd", O_RDWR);
+
+	while (*mode_memory == TEXTEDITOR_MODE) {
+		usleep(40000);
+		retval = write(fnd, output_memory, 4);       //fnd µ¤¾î¾²±â
+		if (output_memory[15] == 0) { // alph mode
+			write(dot, dot_mode[0], dot_size);
+		}
+		else if (output_memory[15] == 1) { // num mode
+			write(dot, dot_mode[1], dot_size);
+		}
+		usleep(40000);
+		write(lcd, output_memory+4, 8);
+	}
+
+	*led_addr = 0;
+	write(fnd, str_fnd, 4); // fnd ²ô±â
+	write(dot, dot_mode[2], dot_size); //dot ²ô±â
+	write(lcd, str_lcd, 32); // lcd ²ô±â
+	close(led);
+	close(fnd);
+	close(dot);
+	close(lcd);
+	return 0;
+
 }
 
 int Draw_board_mode() {
-	while (*mode_memory == DRAWBOARD_MODE) {
-		printf("draw board mode \n");
+	int tmp = 1, tmp2, i, j;
+	int cnt = 0;
+	int ex_buffer[9];
+	int dot_mem[7][10];
+	int mouse[2] = { 0,0 }; //x,y
+	char mem[7] = { 0x40,0x20,0x10,0x08,0x04,0x02,0x01 };
+	for (i = 0; i < 7; i++) {
+		for (j = 0; j < 10; j++) {
+			dot_mem[i][j] = 0;
+		}
 	}
+	printf("draw_board mode\n");
+	while (*mode_memory == DRAWBOARD_MODE) {
+
+
+		if (ex_buffer[0] == 1 && input_memory[0] == 0) { // reset
+			cnt++;
+			for (i = 0; i < 7; i++) {
+				for (j = 0; j < 10; j++) {
+					dot_mem[i][j] = 0;
+				}
+			}
+			mouse[0] = 0;
+			mouse[1] = 0;
+			for (i = 0; i < 10; i++) {
+				output_memory[i + 4] = 0x00;
+			}
+		}
+
+		else if (ex_buffer[1] == 1 && input_memory[1] == 0) { // up
+			cnt++;
+			if (mouse[1] < 9)
+				mouse[1]++;
+
+
+		}
+		else if (ex_buffer[2] == 1 && input_memory[2] == 0) { // 1 : hide  
+			cnt++;
+			
+			output_memory[15] = !output_memory[15];
+		}
+
+		else if (ex_buffer[3] == 1 && input_memory[3] == 0) {// left
+			cnt++;
+			if (mouse[0] > 0)
+				mouse[0]--;
+
+		}
+
+		else if (ex_buffer[4] == 1 && input_memory[4] == 0) {// choose
+			cnt++;
+			dot_mem[mouse[0]][mouse[1]] = !dot_mem[mouse[0]][mouse[1]];
+			if (dot_mem[mouse[0]][mouse[1]] == 1) {
+				output_memory[13 - mouse[1]] += mem[mouse[0]];
+			}
+			else if (dot_mem[mouse[0]][mouse[1]] == 0) {
+				output_memory[13 - mouse[1]] -= mem[mouse[0]];
+			}
+		}
+
+		else if (ex_buffer[5] == 1 && input_memory[5] == 0) {// right
+			cnt++;
+			if (mouse[0] < 6)
+				mouse[0]++;
+
+		}
+
+		else if (ex_buffer[6] == 1 && input_memory[6] == 0) {// clear
+			cnt++;
+			for (i = 0; i < 7; i++) {
+				for (j = 0; j < 10; j++) {
+					dot_mem[i][j] = 0;
+				}
+			}
+			for (i = 0; i < 10; i++) {
+				output_memory[i + 4] = 0x00;
+			}
+		}
+	
+		else if (ex_buffer[7] == 1 && input_memory[7] == 0) {// down
+			cnt++;
+			if (mouse[1] > 0)
+				mouse[1]--;
+		}
+
+		else if (ex_buffer[8] == 1 && input_memory[8] == 0) {// reverse
+			cnt++;
+			for (i = 0; i < 7; i++) {
+				for (j = 0; j < 10; j++) {
+					dot_mem[i][j] = !dot_mem[i][j];
+				}
+			}
+			for (i = 0; i < 10; i++) {
+				output_memory[i+4] = 0x7F- output_memory[i+4];
+			}
+		}
+		// for hide or not
+		output_memory[18] = mem[mouse[0]];
+		output_memory[19] = 13 - mouse[1];
+
+		for (i = 0; i < 10; i++) {
+			printf("%d     ", output_memory[i + 4]);
+		}
+		printf("\n");
+		/*
+		for (i = 0; i < 10; i++) {
+			for (j = 0; j < 7; j++) {
+				printf("%d    ", dot_mem[j][i]);
+
+			}
+			printf("\n");
+		}
+		*/
+		
+		
+		tmp = cnt % 10000;
+		output_memory[0] = tmp / 1000;
+		tmp %= 1000;
+		output_memory[1] = tmp / 100;
+		tmp %= 100;
+		output_memory[2] = tmp / 10;
+		tmp %= 10;
+		output_memory[3] = tmp;
+
+		for (i = 0; i < 9; i++) {
+			ex_buffer[i] = input_memory[i];
+		}
+
+		usleep(50000);
+
+	}
+	return 0;
+}
+int Draw_board_mode_output() {
+	int i;
+	unsigned char retval;
+	unsigned long *fpga_addr = 0;
+	unsigned char *led_addr = 0;
+	int led, fnd, dot, lcd;
+	int dot_size;
+	char tmp;
+
+
+	led = open("/dev/mem", O_RDWR | O_SYNC);
+	fpga_addr = (unsigned long *)mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, led, FPGA_BASE_ADDRESS);
+	led_addr = (unsigned char*)((void*)fpga_addr + LED_ADDR);
+
+	dot = open("/dev/fpga_dot", O_WRONLY);
+	dot_size = sizeof(fpga_number[18]);
+
+	fnd = open("/dev/fpga_fnd", O_RDWR);
+
+	while (*mode_memory == DRAWBOARD_MODE) {
+		usleep(40000);
+		retval = write(fnd, output_memory, 4);       //fnd µ¤¾î¾²±â
+		usleep(40000);
+		/*
+		if (output_memory[15] == 0) { // hide mode
+			
+			output_memory[output_memory[19]] += output_memory[18];
+			write(dot, output_memory + 4, dot_size);
+			sleep(1);
+			output_memory[output_memory[19]] -= output_memory[18];
+			write(dot, output_memory + 4, dot_size);
+			sleep(1);
+		}
+		*/
+		
+			write(dot, output_memory + 4, dot_size);
+		
+			
+		
+
+
+	}
+
+	close(led);
+	close(fnd);
+	close(dot);
+	close(lcd);
+	return 0;
+
 }
 
 int main(int argc, char *argv[]){
